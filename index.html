@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>答え合わせ</title>
+<!--
+  lexile-story の英語の紙の QR を、携帯の中で解くページ（#832）。
+  QR の中身は https://gipcompany.github.io/answer-qr/#<暗号文>。`#` より後ろはサーバーに送られない。
+  暗号は `openssl enc -aes-256-cbc -md sha256 -pbkdf2 -iter 10000 -salt -a -A` の形で、
+  ブラウザー標準の Web Crypto だけで解く。部品は同梱しない。
+  このページに答えもパスワードも書かない。パスワードは初回に打ち、この携帯にだけ覚えさせる。
+
+  正典は path リポジトリの .claude/skills/lexile-story/answer-qr/index.html。
+  公開リポジトリ answer-qr の index.html はその写し。直したら写し直す。
+  build.py は下の decryptAnswer を node で走らせて、刷る前に解けるかを確かめる。
+  BEGIN と END の行を消さないこと。
+-->
+<style>
+  :root {
+    --bg: #fafaf7; --fg: #1b1b1b; --muted: #666; --line: #d6d6d0;
+    --accent: #1f5fbf; --card: #fff; --bad: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141414; --fg: #eee; --muted: #a0a0a0; --line: #333;
+      --accent: #7fb0ff; --card: #1e1e1e; --bad: #ff8a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px 48px; background: var(--bg); color: var(--fg);
+    font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+  }
+  main { max-width: 28rem; margin: 0 auto; }
+  h1 { font-size: 1.2rem; margin: 0 0 1rem; }
+  p { margin: .5rem 0; }
+  .muted { color: var(--muted); font-size: .9rem; }
+  .bad { color: var(--bad); }
+  form { display: grid; gap: .6rem; margin: 1rem 0; }
+  input[type=password] {
+    font-size: 1.2rem; padding: .7rem .8rem; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--card); color: var(--fg); width: 100%;
+  }
+  button {
+    font-size: 1.1rem; padding: .7rem; border: 0; border-radius: 8px;
+    background: var(--accent); color: #fff; font-weight: 600;
+  }
+  ol.answers { list-style: none; padding: 0; margin: 1rem 0; display: grid; gap: .5rem; }
+  ol.answers li {
+    display: flex; justify-content: space-between; align-items: baseline;
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: .6rem 1rem; font-size: 1.3rem;
+  }
+  ol.answers b { font-size: 2rem; font-variant-numeric: tabular-nums; }
+  .link { background: none; color: var(--accent); padding: 0; font-size: .9rem; font-weight: 400; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>答え合わせ</h1>
+
+  <section id="none" hidden>
+    <p>紙の QR を携帯のカメラでかざして開いてください。</p>
+    <p class="muted">このページだけを開いても、答えは出ません。</p>
+  </section>
+
+  <section id="ask" hidden>
+    <form id="form" method="post" action="#" autocomplete="on">
+      <input type="text" name="username" autocomplete="username" value="answer-qr" hidden readonly>
+      <label for="pw">パスワード</label>
+      <input type="password" id="pw" name="password" autocomplete="current-password" required>
+      <button type="submit">答えを見る</button>
+    </form>
+    <p id="wrong" class="bad" hidden>パスワードが違います。</p>
+    <p class="muted">一度打てば、この携帯が覚えます。消えたら、また打ってください。</p>
+  </section>
+
+  <section id="show" hidden>
+    <ol class="answers" id="answers"></ol>
+    <button type="button" class="link" id="forget">この携帯のパスワードを消す</button>
+  </section>
+
+  <section id="broken" hidden>
+    <p class="bad">QR の中身を読めませんでした。</p>
+    <p class="muted">正解の載った紙（-en-ja.pdf）を開いてください。</p>
+  </section>
+</main>
+
+<script>
+// BEGIN decryptAnswer
+// openssl enc -aes-256-cbc -md sha256 -pbkdf2 -iter 10000 -salt -a の暗号文を解く。
+// 中身は "Salted__"（8バイト）、salt（8バイト）、暗号の本体。
+// PBKDF2-SHA256 で 48バイトを作り、頭の32バイトを鍵、残りの16バイトを IV にする。
+async function decryptAnswer(cipherB64, password) {
+  const raw = Uint8Array.from(atob(cipherB64), (c) => c.charCodeAt(0));
+  if (raw.length < 32 || new TextDecoder().decode(raw.slice(0, 8)) !== "Salted__") {
+    throw new Error("not an openssl salted cipher");
+  }
+  const salt = raw.slice(8, 16);
+  const body = raw.slice(16);
+  const base = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = new Uint8Array(await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt, iterations: 10000, hash: "SHA-256" }, base, 48 * 8));
+  const key = await crypto.subtle.importKey(
+    "raw", bits.slice(0, 32), "AES-CBC", false, ["decrypt"]);
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-CBC", iv: bits.slice(32, 48) }, key, body);
+  return new TextDecoder("utf-8", { fatal: true }).decode(plain);
+}
+// END decryptAnswer
+
+const STORE = "answer-qr-password";
+const ANSWER_RE = /^\d+:\d+( \d+:\d+)*$/;
+const $ = (id) => document.getElementById(id);
+
+function show(id) {
+  for (const s of ["none", "ask", "show", "broken"]) $(s).hidden = s !== id;
+}
+function load() { try { return localStorage.getItem(STORE); } catch { return null; } }
+function save(pw) { try { localStorage.setItem(STORE, pw); } catch {} }
+function forget() { try { localStorage.removeItem(STORE); } catch {} }
+
+function cipherFromUrl() {
+  const h = location.hash.slice(1);
+  if (!h) return "";
+  try { return decodeURIComponent(h); } catch { return h; }
+}
+
+// 解けて、答えの形（1:3 2:1 …）になっていれば答えを返す。違えば null。
+async function tryOpen(cipher, pw) {
+  try {
+    const text = (await decryptAnswer(cipher, pw)).trim();
+    return ANSWER_RE.test(text) ? text : null;
+  } catch { return null; }
+}
+
+function render(text) {
+  const ol = $("answers");
+  ol.textContent = "";
+  for (const pair of text.split(" ")) {
+    const [q, a] = pair.split(":");
+    const li = document.createElement("li");
+    const label = document.createElement("span");
+    label.textContent = `問${q}`;
+    const b = document.createElement("b");
+    b.textContent = a;
+    li.append(label, b);
+    ol.append(li);
+  }
+  show("show");
+}
+
+async function start() {
+  const cipher = cipherFromUrl();
+  if (!cipher) return show("none");
+  try { atob(cipher); } catch { return show("broken"); }
+
+  const saved = load();
+  if (saved) {
+    const text = await tryOpen(cipher, saved);
+    if (text) return render(text);
+    forget();
+  }
+  show("ask");
+  $("pw").focus();
+}
+
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const pw = $("pw").value;
+  const text = await tryOpen(cipherFromUrl(), pw);
+  if (!text) {
+    $("wrong").hidden = false;
+    $("pw").select();
+    return;
+  }
+  save(pw);
+  $("wrong").hidden = true;
+  render(text);
+});
+
+$("forget").addEventListener("click", () => {
+  forget();
+  $("pw").value = "";
+  show("ask");
+});
+
+window.addEventListener("hashchange", start);
+start();
+</script>
+</body>
+</html>
